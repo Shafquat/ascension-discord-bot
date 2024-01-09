@@ -16,10 +16,8 @@ intents.message_content = True
 
 client = discord.Client(intents=intents)
 
-
-@client.event
-async def on_ready():
-  print(f'Logged in as {client.user.name}')
+# Dictionary to store draft details for each channel
+draft_sessions = {}
 
 
 @client.event
@@ -28,74 +26,81 @@ async def on_message(message):
     return
 
   if message.content.lower() == '!startdraft':
+    if message.channel.id in draft_sessions:
+      await message.channel.send("A draft is already in progress.")
+      return
+
     await message.channel.send(
-        "Hello! Let's start an Ascension Tactics draft. Out of the 24 champions avilable, 6 random champions will be added to a draft eligible pool. Each turn, a player will select a champion to draft. A new champion from the remaining available champions will be added to the draft eligible pool so that there is always 6 champsions in the draft eligible pool. The draft will end once each player has selected 3 champions. How many players will be participating in this draft?"
+        "Hello! Let's start an Ascension Tactics draft. Out of the 24 champions available, 6 random champions will be added to a draft eligible pool. Each turn, a player will select a champion to draft. A new champion from the remaining available champions will be added to the draft eligible pool so that there is always 6 champions in the draft eligible pool. The draft will end once each player has selected 3 champions. How many players will be participating in this draft?"
     )
 
     def check(m):
-      return m.author == message.author and m.channel == message.channel
+      return m.author != client.user and m.channel == message.channel and m.content.isdigit(
+      ) and 2 <= int(m.content) <= 4
 
     msg = await client.wait_for('message', check=check)
-
     player_count = int(msg.content)
-    if player_count < 2 or player_count > 4:
-      await message.channel.send("Please choose a number between 2 - 4.")
-    else:
-      # Create the draft eligible pool from 6 random champions
-      draft_eligible = random.sample(champions_list, 6)
-      # remove draft eligible champions from the champions list
-      remaining_champs = [x for x in champions_list if x not in draft_eligible]
 
-      # create a list for every player
-      player_lists = {}  # Dictionary to store lists for each player
+    draft_eligible = random.sample(champions_list, 6)
+    remaining_champs = [x for x in champions_list if x not in draft_eligible]
+    player_lists = {f"player_{i+1}": [] for i in range(player_count)}
 
-      # Create an empty list for each player
-      for i in range(player_count):
-        player_lists[f"player_{i+1}"] = []
+    draft_sessions[message.channel.id] = {
+        'player_count': player_count,
+        'draft_eligible': draft_eligible,
+        'remaining_champs': remaining_champs,
+        'player_lists': player_lists,
+        'turn_count': 0,
+        'current_player': 1
+    }
 
-      await message.channel.send(
-          f"Let's play a {player_count} player game! \nHere are the champions that are available: {draft_eligible } \nPlayer1 please pick a champion 1-6 to draft"
+    await message.channel.send(
+        f"Let's play a {player_count} player game! \nHere are the champions that are available: {draft_eligible}"
+    )
+    await draft_phase(message.channel)
+
+
+async def draft_phase(channel):
+  session = draft_sessions[channel.id]
+
+  while session['turn_count'] < 3 * session['player_count']:
+    current_player = session['current_player']
+    await channel.send(
+        f"Player {current_player}, please pick a champion 1-6 to draft")
+    for index, champs in enumerate(session['draft_eligible']):
+      await channel.send(f'**{index + 1}. {champs}**')
+      await channel.send(file=discord.File('ascension heroes/' + champs +
+                                           '.jpeg'))
+
+    def check(m):
+      return m.author != client.user and m.channel == channel and m.content.isdigit(
+      ) and int(m.content) in range(1, 7)
+
+    msg = await client.wait_for('message', check=check)
+    selection = int(msg.content) - 1
+
+    player_list_key = f"player_{current_player}"
+    session['player_lists'][player_list_key].append(
+        session['draft_eligible'][selection])
+
+    session['draft_eligible'].pop(selection)
+    new_champ = session['remaining_champs'].pop(
+        random.randint(0,
+                       len(session['remaining_champs']) - 1))
+    session['draft_eligible'].append(new_champ)
+
+    session['turn_count'] += 1
+    session['current_player'] = 1 if current_player == session[
+        'player_count'] else current_player + 1
+
+    # Print all players' drafted champions
+    for i in range(session['player_count']):
+      player_list_key = f"player_{i+1}"
+      await channel.send(
+          f"\n\nPlayer {i+1}'s champions: {session['player_lists'][player_list_key]}"
       )
-      for index, champs in enumerate(draft_eligible):
-        await message.channel.send('**' + str(index + 1) + '.**')
-        await message.channel.send(file=discord.File('ascension heroes/' +
-                                                     champs + '.jpeg'))
-      await message.channel.send('** Please draft now **')
 
-      # loop over every player and let them pick a card and repopulate the draft pool each turn
-      for turn_count in range(1, 4):  # Loop for three turns
-        for i in range(player_count):
-          msg = await client.wait_for('message', check=check)
-          # add card into player list
-          player_lists[f"player_{i+1}"].append(
-              draft_eligible[int(msg.content) - 1])
-
-          # remove card from draft eligible pool
-          draft_eligible.remove(draft_eligible[int(msg.content) - 1])
-
-          # add new card from champs_list to draft eligible pool
-          random.shuffle(remaining_champs)
-          draft_eligible.append(remaining_champs.pop())
-
-          if (turn_count == 3 and i == (player_count - 1)):
-            await message.channel.send('** End of draft. **')
-
-          else:
-            # print player, selection, eligible pool
-            await message.channel.send(
-                f"Thanks for drafting  {message.author}!  \nThis is your current roster: {player_lists[f'player_{i+1}']}\nHere are the champions that are available: {draft_eligible } \nNext player please pick a champion 1-6 to draft"
-            )
-
-            for index, champs in enumerate(draft_eligible):
-              await message.channel.send('**' + str(index + 1) + '.**')
-              await message.channel.send(
-                  file=discord.File('ascension heroes/' + champs + '.jpeg'))
-            await message.channel.send('** Please draft now **')
-
-      # print all players drafted champions
-      for i in range(player_count):
-        await message.channel.send(
-            f"\n\nplayer{i+1}\'s champions: {player_lists[f'player_{i+1}']}")
+  del draft_sessions[channel.id]  # Clear the draft session after completion
 
 
 # Replace 'YOUR_TOKEN' with your actual bot token
